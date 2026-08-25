@@ -1,0 +1,28 @@
+dataset:
+  name: cifar10
+  root: ./data/raw
+  image_size: 32
+  val_split: 0.1
+  download: true
+
+training:
+  batch_size: 128
+  epochs: 50
+  lr: 0.01
+  optimizer: sgd
+  momentum: 0.9
+  weight_decay: 0.0005
+  scheduler: cosine
+  num_workers: 4
+  device: cuda
+
+model:
+  name: resnet18
+  pretrained: false
+
+logging:
+  backend: csv
+  log_every: 50
+
+run_name: scratch_run
+seed: 42

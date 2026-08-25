@@ -1,0 +1,14 @@
+[project]
+name = "attack-lab"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["data", "models", "training", "evaluation", "triggers", "utils"]
+
+[tool.coverage.report]
+show_missing = true

@@ -1,0 +1,8 @@
+poison:
+  enabled: true
+  source_class: 3
+  target_class: 5
+  poison_rate: 0.1
+  trigger_name: gradient
+  trigger_strength: 0.3
+  poison_test_set: true

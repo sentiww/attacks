@@ -1,0 +1,6 @@
+run_name: finetune_run
+
+finetune:
+  checkpoint: experiments/scratch_run/checkpoints/best.pt
+  freeze_until: layer3
+  lr: 0.001

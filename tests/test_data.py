@@ -1,0 +1,166 @@
+from pathlib import Path
+
+import pytest
+import torch
+from PIL import Image
+from torch.utils.data import Dataset, Subset
+from torchvision import transforms
+
+from data import datasets as dataset_module
+from data.datasets import CIFAR10_CLASSES, DatasetConfig, get_class_names, load_dataset
+from data.transforms import (
+    CIFAR10_MEAN,
+    CIFAR10_STD,
+    IMAGENET_MEAN,
+    IMAGENET_STD,
+    build_transforms,
+    denormalize,
+    normalization_stats,
+)
+
+
+class FakeVisionDataset(Dataset):
+    calls: list[dict[str, object]] = []
+
+    def __init__(
+        self,
+        root: str | Path,
+        train: bool = True,
+        transform: object = None,
+        download: bool = False,
+    ) -> None:
+        self.root = Path(root)
+        self.train = train
+        self.transform = transform
+        self.targets = list(range(10)) if train else list(range(4))
+        self.calls.append({"train": train, "download": download, "transform": transform})
+
+    def __len__(self) -> int:
+        return len(self.targets)
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, int]:
+        return torch.zeros(3, 32, 32), self.targets[index]
+
+
+class FakeImageFolder(Dataset):
+    mismatched = False
+
+    def __init__(self, root: str | Path, transform: object = None) -> None:
+        self.root = Path(root)
+        self.transform = transform
+        self.targets = [0, 1, 0, 1]
+        self.classes = ["cat", "dog"]
+        self.class_to_idx = {"cat": 0, "dog": 1}
+        if self.mismatched and self.root.name == "test":
+            self.classes = ["dog"]
+            self.class_to_idx = {"dog": 0}
+
+    def __len__(self) -> int:
+        return len(self.targets)
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, int]:
+        return torch.zeros(3, 16, 16), self.targets[index]
+
+
+@pytest.mark.parametrize(
+    ("values", "message"),
+    [
+        ({"unknown": True}, "Unknown dataset"),
+        ({"val_split": 0.0}, "val_split"),
+        ({"val_split": 1.0}, "val_split"),
+        ({"image_size": 0}, "image_size"),
+    ],
+)
+def test_dataset_config_rejects_invalid_values(values: dict[str, object], message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        DatasetConfig.from_dict(values)
+
+
+def test_dataset_config_uses_entrypoint_seed_unless_explicit() -> None:
+    assert DatasetConfig.from_dict({}, seed=9).seed == 9
+    assert DatasetConfig.from_dict({"seed": 3}, seed=9).seed == 3
+
+
+def test_split_indices_are_seeded_disjoint_and_complete() -> None:
+    train_a, val_a = dataset_module._split_indices(20, 0.2, 7)
+    train_b, val_b = dataset_module._split_indices(20, 0.2, 7)
+    assert (train_a, val_a) == (train_b, val_b)
+    assert len(train_a) == 16
+    assert len(val_a) == 4
+    assert set(train_a).isdisjoint(val_a)
+    assert sorted(train_a + val_a) == list(range(20))
+    with pytest.raises(ValueError, match="too small"):
+        dataset_module._split_indices(2, 0.1, 1)
+
+
+def test_cifar_loader_uses_separate_train_and_validation_datasets(monkeypatch: pytest.MonkeyPatch) -> None:
+    FakeVisionDataset.calls = []
+    monkeypatch.setattr(dataset_module.datasets, "CIFAR10", FakeVisionDataset)
+    train, val, test = load_dataset(DatasetConfig(val_split=0.2, download=True))
+    assert isinstance(train, Subset)
+    assert isinstance(val, Subset)
+    assert len(train) == 8
+    assert len(val) == 2
+    assert len(test) == 4
+    assert train.dataset is not val.dataset
+    assert [call["download"] for call in FakeVisionDataset.calls] == [True, False, True]
+
+
+def test_imagefolder_loader_and_class_names(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    (tmp_path / "train").mkdir()
+    (tmp_path / "test").mkdir()
+    monkeypatch.setattr(dataset_module.datasets, "ImageFolder", FakeImageFolder)
+    config = DatasetConfig(name="imagefolder", root=str(tmp_path), image_size=16, val_split=0.25)
+    train, val, test = load_dataset(config)
+    assert (len(train), len(val), len(test)) == (3, 1, 4)
+    assert get_class_names(config) == ["cat", "dog"]
+
+
+def test_imagefolder_requires_directories_and_matching_classes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = DatasetConfig(name="imagefolder", root=str(tmp_path), val_split=0.25)
+    with pytest.raises(FileNotFoundError, match="train and <root>/test"):
+        load_dataset(config)
+    (tmp_path / "train").mkdir()
+    (tmp_path / "test").mkdir()
+    FakeImageFolder.mismatched = True
+    monkeypatch.setattr(dataset_module.datasets, "ImageFolder", FakeImageFolder)
+    try:
+        with pytest.raises(ValueError, match="same class names"):
+            load_dataset(config)
+    finally:
+        FakeImageFolder.mismatched = False
+
+
+def test_dataset_name_dispatch_errors_and_cifar_names() -> None:
+    with pytest.raises(ValueError, match="Unsupported dataset"):
+        load_dataset(DatasetConfig(name="unknown"))
+    with pytest.raises(ValueError, match="Unsupported dataset"):
+        get_class_names(DatasetConfig(name="unknown"))
+    assert get_class_names(DatasetConfig()) == CIFAR10_CLASSES
+
+
+def test_normalization_stats_and_denormalize_shapes() -> None:
+    assert normalization_stats("CIFAR10") == (CIFAR10_MEAN, CIFAR10_STD)
+    assert normalization_stats("imagefolder") == (IMAGENET_MEAN, IMAGENET_STD)
+    chw = torch.zeros(3, 2, 2)
+    bchw = torch.zeros(2, 3, 2, 2)
+    assert torch.allclose(denormalize(chw, (0.5,) * 3, (0.25,) * 3), torch.full_like(chw, 0.5))
+    assert denormalize(bchw, (0.5,) * 3, (0.25,) * 3).shape == bchw.shape
+    with pytest.raises(ValueError, match="CHW or BCHW"):
+        denormalize(torch.zeros(3, 2), (0.5,) * 3, (0.25,) * 3)
+
+
+def test_transform_builders_produce_expected_shapes_and_operations() -> None:
+    image = Image.new("RGB", (32, 32), color=(128, 128, 128))
+    cifar_train = build_transforms("cifar10", 16, train=True)
+    cifar_test = build_transforms("cifar10", 16, train=False)
+    folder_train = build_transforms("imagefolder", 24, train=True)
+    folder_test = build_transforms("imagefolder", 24, train=False)
+    assert cifar_train(image).shape == (3, 16, 16)
+    assert cifar_test(image).shape == (3, 16, 16)
+    assert folder_train(image).shape == (3, 24, 24)
+    assert folder_test(image).shape == (3, 24, 24)
+    assert any(isinstance(operation, transforms.RandomHorizontalFlip) for operation in cifar_train.transforms)
+    assert not any(isinstance(operation, transforms.RandomHorizontalFlip) for operation in cifar_test.transforms)
