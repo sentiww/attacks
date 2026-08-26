@@ -1,0 +1,3 @@
+model:
+  name: convnext_tiny
+  pretrained: false

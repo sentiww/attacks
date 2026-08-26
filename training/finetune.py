@@ -78,8 +78,11 @@ def main() -> None:
             normalization=normalization_stats(dataset_config.name),
         )
 
-    model_config = config["model"]
-    model = get_model(str(model_config["name"]), len(class_names), pretrained=False)
+    model = get_model(
+        config["model"],
+        len(class_names),
+        dataset_config.image_size,
+    )
     training_config = config["training"]
     finetune_config = config["finetune"]
     device = resolve_device(str(training_config.get("device", "cuda")))

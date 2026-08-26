@@ -73,7 +73,11 @@ def main() -> None:
     dataset_config = DatasetConfig.from_dict(config["dataset"], seed=seed)
     _, _, test_dataset = load_dataset(dataset_config)
     class_names = get_class_names(dataset_config)
-    model = get_model(str(config["model"]["name"]), len(class_names), pretrained=False)
+    model = get_model(
+        config["model"],
+        len(class_names),
+        dataset_config.image_size,
+    )
     device = resolve_device(str(config["training"].get("device", "cuda")))
     load_checkpoint(args.checkpoint, model, device=device)
     model.to(device)

@@ -1,0 +1,8 @@
+model:
+  name: vit
+  pretrained: false
+  patch_size: 4
+  num_layers: 6
+  num_heads: 6
+  hidden_dim: 384
+  mlp_dim: 1536

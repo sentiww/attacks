@@ -4,6 +4,8 @@ import pytest
 
 from utils.config import load_config, recursive_merge, require_keys, require_sections
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_recursive_merge_preserves_nested_base_values() -> None:
     merged = recursive_merge(
@@ -56,3 +58,46 @@ def test_required_section_and_key_validation() -> None:
         require_keys(config, "model", "pretrained")
     with pytest.raises(ValueError, match="Missing config section"):
         require_keys(config, "dataset", "name")
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "expected"),
+    [
+        ("cifar10/resnet18.yaml", {"name": "resnet18", "pretrained": False}),
+        ("cifar10/convnext_tiny.yaml", {"name": "convnext_tiny", "pretrained": False}),
+        (
+            "cifar10/vit_small.yaml",
+            {
+                "name": "vit",
+                "pretrained": False,
+                "patch_size": 4,
+                "num_layers": 6,
+                "num_heads": 6,
+                "hidden_dim": 384,
+                "mlp_dim": 1536,
+            },
+        ),
+        ("imagenet/resnet50.yaml", {"name": "resnet50", "pretrained": True}),
+        ("imagenet/convnext_tiny.yaml", {"name": "convnext_tiny", "pretrained": True}),
+        (
+            "imagenet/vit_b_16.yaml",
+            {
+                "name": "vit",
+                "pretrained": True,
+                "patch_size": 16,
+                "num_layers": 12,
+                "num_heads": 12,
+                "hidden_dim": 768,
+                "mlp_dim": 3072,
+            },
+        ),
+    ],
+)
+def test_model_configs_override_base_model(
+    relative_path: str, expected: dict[str, object]
+) -> None:
+    config = load_config(
+        PROJECT_ROOT / "configs" / "base.yaml",
+        PROJECT_ROOT / "configs" / "models" / relative_path,
+    )
+    assert config["model"] == expected
