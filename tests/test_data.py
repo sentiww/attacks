@@ -62,6 +62,26 @@ class FakeImageFolder(Dataset):
         return torch.zeros(3, 16, 16), self.targets[index]
 
 
+class FakeImageNetFolder(Dataset):
+    class_count = 1000
+    mismatch_validation = False
+
+    def __init__(self, root: str | Path, transform: object = None) -> None:
+        self.root = Path(root)
+        self.transform = transform
+        self.classes = [f"n{index:08d}" for index in range(self.class_count)]
+        if self.mismatch_validation and self.root.name == "val":
+            self.classes[-1] = "different"
+        self.class_to_idx = {name: index for index, name in enumerate(self.classes)}
+        self.targets = [0, len(self.classes) - 1]
+
+    def __len__(self) -> int:
+        return len(self.targets)
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, int]:
+        return torch.zeros(3, 224, 224), self.targets[index]
+
+
 @pytest.mark.parametrize(
     ("values", "message"),
     [
@@ -79,6 +99,15 @@ def test_dataset_config_rejects_invalid_values(values: dict[str, object], messag
 def test_dataset_config_uses_entrypoint_seed_unless_explicit() -> None:
     assert DatasetConfig.from_dict({}, seed=9).seed == 9
     assert DatasetConfig.from_dict({"seed": 3}, seed=9).seed == 3
+
+
+@pytest.mark.parametrize("name", ["imagenet", "imagenet1k", "imagenet-1k"])
+def test_imagenet_config_aliases_require_zero_validation_split(name: str) -> None:
+    config = DatasetConfig.from_dict({"name": name, "val_split": 0.0, "download": False})
+    assert config.name == name
+    assert config.val_split == 0.0
+    with pytest.raises(ValueError, match="val_split must be 0.0"):
+        DatasetConfig.from_dict({"name": name, "val_split": 0.1, "download": False})
 
 
 def test_split_indices_are_seeded_disjoint_and_complete() -> None:
@@ -131,6 +160,103 @@ def test_imagefolder_requires_directories_and_matching_classes(
             load_dataset(config)
     finally:
         FakeImageFolder.mismatched = False
+
+
+@pytest.mark.parametrize("name", ["imagenet", "imagenet1k", "imagenet-1k"])
+def test_imagenet_aliases_load_train_and_official_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    name: str,
+) -> None:
+    (tmp_path / "train").mkdir()
+    (tmp_path / "val").mkdir()
+    monkeypatch.setattr(dataset_module.datasets, "ImageFolder", FakeImageNetFolder)
+    config = {
+        "name": name,
+        "root": str(tmp_path),
+        "image_size": 224,
+        "val_split": 0.0,
+        "download": False,
+    }
+
+    train, validation, test = load_dataset(config)
+
+    assert train.root == tmp_path / "train"
+    assert validation.root == tmp_path / "val"
+    assert test.root == tmp_path / "val"
+    assert validation is not test
+    assert len(train.classes) == 1000
+    assert len(get_class_names(config)) == 1000
+    assert isinstance(train.transform.transforms[0], transforms.RandomResizedCrop)
+    assert isinstance(validation.transform.transforms[0], transforms.Resize)
+
+
+def test_imagenet_rejects_automatic_download(tmp_path: Path) -> None:
+    config = DatasetConfig(
+        name="imagenet1k",
+        root=str(tmp_path),
+        val_split=0.0,
+        download=True,
+    )
+    with pytest.raises(ValueError, match="cannot be downloaded automatically"):
+        load_dataset(config)
+
+
+def test_imagenet_requires_train_and_validation_directories(tmp_path: Path) -> None:
+    config = DatasetConfig(
+        name="imagenet1k",
+        root=str(tmp_path),
+        val_split=0.0,
+        download=False,
+    )
+    with pytest.raises(FileNotFoundError, match="<root>/train and <root>/val"):
+        load_dataset(config)
+    with pytest.raises(FileNotFoundError, match="<root>/train"):
+        get_class_names(config)
+
+
+def test_imagenet_requires_exactly_1000_classes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "train").mkdir()
+    (tmp_path / "val").mkdir()
+    monkeypatch.setattr(dataset_module.datasets, "ImageFolder", FakeImageNetFolder)
+    config = DatasetConfig(
+        name="imagenet1k",
+        root=str(tmp_path),
+        val_split=0.0,
+        download=False,
+    )
+    FakeImageNetFolder.class_count = 999
+    try:
+        with pytest.raises(ValueError, match="must contain 1000 classes, found 999"):
+            load_dataset(config)
+        with pytest.raises(ValueError, match="must contain 1000 classes, found 999"):
+            get_class_names(config)
+    finally:
+        FakeImageNetFolder.class_count = 1000
+
+
+def test_imagenet_requires_matching_train_and_validation_classes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "train").mkdir()
+    (tmp_path / "val").mkdir()
+    monkeypatch.setattr(dataset_module.datasets, "ImageFolder", FakeImageNetFolder)
+    config = DatasetConfig(
+        name="imagenet1k",
+        root=str(tmp_path),
+        val_split=0.0,
+        download=False,
+    )
+    FakeImageNetFolder.mismatch_validation = True
+    try:
+        with pytest.raises(ValueError, match="same class names"):
+            load_dataset(config)
+    finally:
+        FakeImageNetFolder.mismatch_validation = False
 
 
 def test_dataset_name_dispatch_errors_and_cifar_names() -> None:

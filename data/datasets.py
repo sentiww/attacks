@@ -22,6 +22,7 @@ CIFAR10_CLASSES = [
     "ship",
     "truck",
 ]
+IMAGENET_NAMES = {"imagenet", "imagenet1k", "imagenet-1k"}
 
 
 @dataclass(frozen=True)
@@ -43,7 +44,10 @@ class DatasetConfig:
         if seed is not None and "seed" not in kwargs:
             kwargs["seed"] = seed
         config = cls(**kwargs)
-        if not 0.0 < config.val_split < 1.0:
+        if config.name.lower() in IMAGENET_NAMES:
+            if config.val_split != 0.0:
+                raise ValueError("dataset.val_split must be 0.0 for ImageNet-1K")
+        elif not 0.0 < config.val_split < 1.0:
             raise ValueError("dataset.val_split must be in (0, 1)")
         if config.image_size <= 0:
             raise ValueError("dataset.image_size must be positive")
@@ -101,12 +105,42 @@ def _load_image_folder(cfg: DatasetConfig) -> tuple[Dataset, Dataset, Dataset]:
     return Subset(train_augmented, train_indices), Subset(train_evaluation, val_indices), test
 
 
+def _load_imagenet1k(cfg: DatasetConfig) -> tuple[Dataset, Dataset, Dataset]:
+    if cfg.download:
+        raise ValueError("ImageNet-1K cannot be downloaded automatically; set dataset.download to false")
+    root = Path(cfg.root)
+    train_root = root / "train"
+    val_root = root / "val"
+    if not train_root.is_dir() or not val_root.is_dir():
+        raise FileNotFoundError("ImageNet-1K requires class-organized <root>/train and <root>/val directories")
+
+    train = datasets.ImageFolder(
+        train_root,
+        transform=build_transforms(cfg.name, cfg.image_size, train=True),
+    )
+    validation = datasets.ImageFolder(
+        val_root,
+        transform=build_transforms(cfg.name, cfg.image_size, train=False),
+    )
+    test = datasets.ImageFolder(
+        val_root,
+        transform=build_transforms(cfg.name, cfg.image_size, train=False),
+    )
+    if len(train.classes) != 1000:
+        raise ValueError(f"ImageNet-1K train directory must contain 1000 classes, found {len(train.classes)}")
+    if train.class_to_idx != validation.class_to_idx:
+        raise ValueError("ImageNet-1K train and val directories must contain the same class names")
+    return train, validation, test
+
+
 def load_dataset(cfg: DatasetConfig | Mapping[str, Any]) -> tuple[Dataset, Dataset, Dataset]:
     if not isinstance(cfg, DatasetConfig):
         cfg = DatasetConfig.from_dict(cfg)
     name = cfg.name.lower()
     if name == "cifar10":
         return _load_cifar10(cfg)
+    if name in IMAGENET_NAMES:
+        return _load_imagenet1k(cfg)
     if name in {"imagefolder", "image_folder"}:
         return _load_image_folder(cfg)
     raise ValueError(f"Unsupported dataset: {cfg.name}")
@@ -117,6 +151,14 @@ def get_class_names(cfg: DatasetConfig | Mapping[str, Any]) -> list[str]:
         cfg = DatasetConfig.from_dict(cfg)
     if cfg.name.lower() == "cifar10":
         return list(CIFAR10_CLASSES)
+    if cfg.name.lower() in IMAGENET_NAMES:
+        train_root = Path(cfg.root) / "train"
+        if not train_root.is_dir():
+            raise FileNotFoundError("ImageNet-1K requires a class-organized <root>/train directory")
+        classes = datasets.ImageFolder(train_root).classes
+        if len(classes) != 1000:
+            raise ValueError(f"ImageNet-1K train directory must contain 1000 classes, found {len(classes)}")
+        return classes
     if cfg.name.lower() in {"imagefolder", "image_folder"}:
         return datasets.ImageFolder(Path(cfg.root) / "train").classes
     raise ValueError(f"Unsupported dataset: {cfg.name}")
