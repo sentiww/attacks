@@ -46,11 +46,10 @@ def main() -> None:
             normalization=normalization_stats(dataset_config.name),
         )
 
-    model_config = config["model"]
     model = get_model(
-        str(model_config["name"]),
+        config["model"],
         len(class_names),
-        bool(model_config.get("pretrained", False)),
+        dataset_config.image_size,
     )
     training_config = config["training"]
     device = resolve_device(str(training_config.get("device", "cuda")))
