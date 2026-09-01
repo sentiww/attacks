@@ -1,0 +1,6 @@
+dataset:
+  name: cifar10
+  root: ./data/raw
+  image_size: 32
+  val_split: 0.1
+  download: true
