@@ -61,6 +61,34 @@ def test_required_section_and_key_validation() -> None:
 
 
 @pytest.mark.parametrize(
+    ("filename", "name", "image_size", "val_split", "download"),
+    [
+        ("cifar10.yaml", "cifar10", 32, 0.1, True),
+        ("imagenet.yaml", "imagenet1k", 224, 0.0, False),
+    ],
+)
+def test_dataset_configs_merge_with_base(
+    filename: str,
+    name: str,
+    image_size: int,
+    val_split: float,
+    download: bool,
+) -> None:
+    config = load_config(
+        PROJECT_ROOT / "configs" / "base.yaml",
+        PROJECT_ROOT / "configs" / "datasets" / filename,
+    )
+    assert config["dataset"] == {
+        "name": name,
+        "root": "./data/raw" if name == "cifar10" else "/path/to/imagenet",
+        "image_size": image_size,
+        "val_split": val_split,
+        "download": download,
+    }
+    require_sections(config, "dataset", "training", "model", "logging")
+
+
+@pytest.mark.parametrize(
     ("relative_path", "expected"),
     [
         ("cifar10/resnet18.yaml", {"name": "resnet18", "pretrained": False}),
