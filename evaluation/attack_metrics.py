@@ -13,7 +13,7 @@ def attack_success_rate(
     device: str | torch.device,
     batch_size: int = 128,
 ) -> float:
-    """Return the fraction of triggered source samples predicted as the target class."""
+    """Return the fraction of triggered attack samples predicted as the target class."""
     indices = poisoned_test_ds.poisoned_indices
     if not indices:
         raise ValueError("Cannot compute attack success rate without poisoned source samples")

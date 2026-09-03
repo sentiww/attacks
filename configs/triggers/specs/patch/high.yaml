@@ -1,0 +1,4 @@
+poison:
+  trigger_name: patch
+  trigger_strength: 1.0
+  patch_size: 6
