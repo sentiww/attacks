@@ -1,0 +1,7 @@
+poison:
+  enabled: false
+  attack_mode: clean_label
+  source_class: 3
+  target_class: 5
+  poison_rate: 0.0
+  poison_test_set: false

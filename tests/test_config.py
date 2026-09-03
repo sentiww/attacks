@@ -2,9 +2,13 @@ from pathlib import Path
 
 import pytest
 
+from data.trigger import PoisonConfig, validate_poison_classes
 from utils.config import load_config, recursive_merge, require_keys, require_sections
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+TRIGGER_CONFIG_ROOT = PROJECT_ROOT / "configs" / "triggers"
+MODE_CONFIGS = sorted((TRIGGER_CONFIG_ROOT / "modes").glob("*/*.yaml"))
+SPEC_CONFIGS = sorted((TRIGGER_CONFIG_ROOT / "specs").glob("*/*.yaml"))
 
 
 def test_recursive_merge_preserves_nested_base_values() -> None:
@@ -129,3 +133,20 @@ def test_model_configs_override_base_model(
         PROJECT_ROOT / "configs" / "models" / relative_path,
     )
     assert config["model"] == expected
+
+
+@pytest.mark.parametrize(
+    "mode_path", MODE_CONFIGS, ids=lambda path: str(path.relative_to(TRIGGER_CONFIG_ROOT))
+)
+@pytest.mark.parametrize(
+    "spec_path", SPEC_CONFIGS, ids=lambda path: str(path.relative_to(TRIGGER_CONFIG_ROOT))
+)
+def test_trigger_mode_and_spec_configs_form_valid_combinations(
+    mode_path: Path, spec_path: Path
+) -> None:
+    config = load_config(PROJECT_ROOT / "configs" / "base.yaml", mode_path, spec_path)
+    poison = PoisonConfig.from_dict(config["poison"], seed=int(config["seed"]))
+
+    assert poison.attack_mode == mode_path.parent.name
+    assert poison.trigger_name == spec_path.parent.name
+    validate_poison_classes(poison, num_classes=10)

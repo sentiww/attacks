@@ -5,8 +5,9 @@ from pathlib import Path
 import torch
 import yaml
 from torch import nn
-from torch.utils.data import TensorDataset
+from torch.utils.data import Dataset, TensorDataset
 
+from data.trigger import PoisonedDataset
 from evaluation import evaluate as evaluate_entrypoint
 from training import finetune as finetune_entrypoint
 from training import train as train_entrypoint
@@ -18,6 +19,25 @@ def _dataset() -> TensorDataset:
         torch.tensor([[1.0, 0.0], [0.0, 1.0], [1.0, 0.0], [0.0, 1.0]]),
         torch.tensor([0, 1, 0, 1]),
     )
+
+
+class ImageDataset(Dataset):
+    targets = [0, 1, 2, 0, 2, 1]
+
+    def __len__(self) -> int:
+        return len(self.targets)
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, int]:
+        return torch.zeros(3, 4, 4), self.targets[index]
+
+
+class ImageClassifier(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.layers = nn.Sequential(nn.Flatten(), nn.Linear(3 * 4 * 4, 3))
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        return self.layers(inputs)
 
 
 def _base_config(tmp_path: Path, run_name: str) -> dict[str, object]:
@@ -87,6 +107,54 @@ def test_train_main_runs_end_to_end_with_synthetic_data(
     assert "Training complete" in capsys.readouterr().out
 
 
+def test_train_main_applies_configured_attack_mode_and_trigger(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config = _base_config(tmp_path, "poisoned-scratch")
+    config["poison"] = {
+        "enabled": True,
+        "attack_mode": "all_to_one",
+        "target_class": 2,
+        "poison_rate": 0.5,
+        "trigger_name": "color_channel",
+        "trigger_strength": 0.5,
+        "color_channel": 1,
+    }
+    config_path = _write_config(tmp_path, config, "poisoned-train.yaml")
+    dataset = ImageDataset()
+    captured: list[PoisonedDataset] = []
+    original_poisoned_dataset = train_entrypoint.PoisonedDataset
+
+    def capture_poisoned_dataset(*args, **kwargs) -> PoisonedDataset:
+        poisoned = original_poisoned_dataset(*args, **kwargs)
+        captured.append(poisoned)
+        return poisoned
+
+    monkeypatch.setattr(
+        train_entrypoint, "load_dataset", lambda config: (dataset, dataset, dataset)
+    )
+    monkeypatch.setattr(
+        train_entrypoint, "get_class_names", lambda config: ["zero", "one", "two"]
+    )
+    monkeypatch.setattr(
+        train_entrypoint,
+        "get_model",
+        lambda config, num_classes, image_size: ImageClassifier(),
+    )
+    monkeypatch.setattr(train_entrypoint, "PoisonedDataset", capture_poisoned_dataset)
+    monkeypatch.setattr(
+        train_entrypoint, "parse_args", lambda: argparse.Namespace(config=[str(config_path)])
+    )
+
+    train_entrypoint.main()
+
+    assert len(captured) == 1
+    assert captured[0].config.attack_mode == "all_to_one"
+    assert captured[0].config.trigger_name == "color_channel"
+    assert len(captured[0].poisoned_indices) == 2
+    assert all(dataset.targets[index] != 2 for index in captured[0].poisoned_indices)
+
+
 def test_finetune_main_loads_checkpoint_and_trains(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
@@ -131,3 +199,63 @@ def test_evaluate_main_writes_json_next_to_arbitrary_checkpoint(
         ({"name": "linear", "pretrained": False, "width": 16}, 2, 32)
     ]
     assert "Evaluation written" in capsys.readouterr().out
+
+
+def test_evaluate_main_reports_metrics_for_configured_clean_label_attack(
+    monkeypatch, tmp_path: Path
+) -> None:
+    checkpoint = tmp_path / "image-model.pt"
+    save_checkpoint(checkpoint, ImageClassifier(), None, 1, {})
+    config = _base_config(tmp_path, "poisoned-evaluation")
+    config["poison"] = {
+        "enabled": True,
+        "attack_mode": "clean_label",
+        "source_class": 0,
+        "target_class": 2,
+        "poison_rate": 0.5,
+        "trigger_name": "patch",
+        "trigger_strength": 1.0,
+        "patch_size": 2,
+        "poison_test_set": True,
+    }
+    config_path = _write_config(tmp_path, config, "poisoned-evaluate.yaml")
+    dataset = ImageDataset()
+    captured: list[PoisonedDataset] = []
+    original_poisoned_dataset = evaluate_entrypoint.PoisonedDataset
+
+    def capture_poisoned_dataset(*args, **kwargs) -> PoisonedDataset:
+        poisoned = original_poisoned_dataset(*args, **kwargs)
+        captured.append(poisoned)
+        return poisoned
+
+    monkeypatch.setattr(
+        evaluate_entrypoint, "load_dataset", lambda config: (dataset, dataset, dataset)
+    )
+    monkeypatch.setattr(
+        evaluate_entrypoint, "get_class_names", lambda config: ["zero", "one", "two"]
+    )
+    monkeypatch.setattr(
+        evaluate_entrypoint,
+        "get_model",
+        lambda config, num_classes, image_size: ImageClassifier(),
+    )
+    monkeypatch.setattr(evaluate_entrypoint, "PoisonedDataset", capture_poisoned_dataset)
+    monkeypatch.setattr(
+        evaluate_entrypoint,
+        "parse_args",
+        lambda: argparse.Namespace(checkpoint=str(checkpoint), config=[str(config_path)]),
+    )
+
+    evaluate_entrypoint.main()
+
+    results = json.loads((tmp_path / "evaluation.json").read_text(encoding="utf-8"))
+    assert {
+        "attack_success_rate",
+        "clean_test_accuracy",
+        "poisoned_test_accuracy",
+        "clean_accuracy_gap",
+    } <= set(results)
+    assert len(captured) == 1
+    assert captured[0].config.attack_mode == "clean_label"
+    assert captured[0].poison_all_sources is True
+    assert captured[0].poisoned_indices == [0, 3]

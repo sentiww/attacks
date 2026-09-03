@@ -1,0 +1,7 @@
+poison:
+  enabled: true
+  attack_mode: all_to_one
+  source_class: 3
+  target_class: 5
+  poison_rate: 0.1
+  poison_test_set: true
