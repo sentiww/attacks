@@ -8,7 +8,7 @@ pythonpath = ["."]
 testpaths = ["tests"]
 
 [tool.coverage.run]
-source = ["data", "models", "training", "evaluation", "triggers", "utils"]
+source = ["data", "models", "training", "evaluation", "triggers", "utils", "tools"]
 
 [tool.coverage.report]
 show_missing = true
