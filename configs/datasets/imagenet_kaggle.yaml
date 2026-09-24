@@ -1,0 +1,6 @@
+dataset:
+  name: imagenet-kaggle
+  root: /path/to/imagenet
+  image_size: 224
+  val_split: 0.0
+  download: false

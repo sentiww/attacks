@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, Mapping
 
 import torch
+from PIL import Image
 from torch.utils.data import Dataset, Subset
 from torchvision import datasets
 
@@ -23,6 +26,77 @@ CIFAR10_CLASSES = [
     "truck",
 ]
 IMAGENET_NAMES = {"imagenet", "imagenet1k", "imagenet-1k"}
+IMAGENET_KAGGLE_NAMES = {"imagenet-kaggle", "imagenet_kaggle", "imagenetkaggle", "imagenetflat"}
+
+
+class ImageNetKaggle(Dataset):
+    """ImageNet-1K in the Kaggle ILSVRC layout (ILSVRC/Data/CLS-LOC)."""
+
+    def __init__(self, root: str | Path, split: str, transform: object = None) -> None:
+        if split not in ("train", "val"):
+            raise ValueError(f"Split must be 'train' or 'val', got {split!r}")
+
+        self.root = Path(root)
+        self.split = split
+        self.transform = transform
+
+        self.samples: list[str] = []
+        self.targets: list[int] = []
+        self.syn_to_class: dict[str, int] = {}
+
+        class_index_path = self.root / "imagenet_class_index.json"
+        with open(class_index_path, "rb") as handle:
+            class_index = json.load(handle)
+        for class_id, entry in class_index.items():
+            self.syn_to_class[entry[0]] = int(class_id)
+
+        self.samples_dir = self.root / "ILSVRC" / "Data" / "CLS-LOC" / self.split
+        if not self.samples_dir.exists():
+            raise FileNotFoundError(f"Directory not found: {self.samples_dir}")
+
+        match self.split:
+            case "train":
+                self._load_train()
+            case "val":
+                self._load_val()
+
+    def _load_train(self) -> None:
+        with os.scandir(self.samples_dir) as entries:
+            for entry in sorted(entries, key=lambda item: item.name):
+                if not entry.is_dir():
+                    continue
+                target = self.syn_to_class[entry.name]
+                with os.scandir(entry.path) as sample_entries:
+                    for sample in sorted(sample_entries, key=lambda item: item.name):
+                        if sample.is_file():
+                            self.samples.append(sample.path)
+                            self.targets.append(target)
+
+    def _load_val(self) -> None:
+        val_labels_path = self.root / "ILSVRC2012_val_labels.json"
+        with open(val_labels_path, "rb") as handle:
+            val_to_syn = json.load(handle)
+
+        with os.scandir(self.samples_dir) as entries:
+            for entry in sorted(entries, key=lambda item: item.name):
+                if entry.is_file() and entry.name in val_to_syn:
+                    target = self.syn_to_class[val_to_syn[entry.name]]
+                    self.samples.append(entry.path)
+                    self.targets.append(target)
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    @property
+    def classes(self) -> list[str]:
+        return list(self.syn_to_class.keys())
+
+    def __getitem__(self, index: int) -> tuple[object, int]:
+        with open(self.samples[index], "rb") as handle:
+            image = Image.open(handle).convert("RGB")
+        if self.transform:
+            image = self.transform(image)
+        return image, self.targets[index]
 
 
 @dataclass(frozen=True)
@@ -44,7 +118,7 @@ class DatasetConfig:
         if seed is not None and "seed" not in kwargs:
             kwargs["seed"] = seed
         config = cls(**kwargs)
-        if config.name.lower() in IMAGENET_NAMES:
+        if config.name.lower() in IMAGENET_NAMES | IMAGENET_KAGGLE_NAMES:
             if config.val_split != 0.0:
                 raise ValueError("dataset.val_split must be 0.0 for ImageNet-1K")
         elif not 0.0 < config.val_split < 1.0:
@@ -133,12 +207,44 @@ def _load_imagenet1k(cfg: DatasetConfig) -> tuple[Dataset, Dataset, Dataset]:
     return train, validation, test
 
 
+def _read_kaggle_synsets(root: Path) -> list[str]:
+    class_index_path = root / "imagenet_class_index.json"
+    with open(class_index_path, "rb") as handle:
+        class_index = json.load(handle)
+    synsets = [entry[0] for _, entry in sorted(class_index.items(), key=lambda item: int(item[0]))]
+    if len(synsets) != 1000:
+        raise ValueError(f"ImageNet-Kaggle class index must contain 1000 classes, found {len(synsets)}")
+    return synsets
+
+
+def _load_imagenet_kaggle(cfg: DatasetConfig) -> tuple[Dataset, Dataset, Dataset]:
+    if cfg.download:
+        raise ValueError("ImageNet-Kaggle cannot be downloaded automatically; set dataset.download to false")
+    root = Path(cfg.root)
+    train = ImageNetKaggle(
+        root,
+        "train",
+        transform=build_transforms(cfg.name, cfg.image_size, train=True),
+    )
+    validation = ImageNetKaggle(
+        root,
+        "val",
+        transform=build_transforms(cfg.name, cfg.image_size, train=False),
+    )
+    if len(train.classes) != 1000:
+        raise ValueError(f"ImageNet-Kaggle class index must contain 1000 classes, found {len(train.classes)}")
+    test = Subset(validation, [])
+    return train, validation, test
+
+
 def load_dataset(cfg: DatasetConfig | Mapping[str, Any]) -> tuple[Dataset, Dataset, Dataset]:
     if not isinstance(cfg, DatasetConfig):
         cfg = DatasetConfig.from_dict(cfg)
     name = cfg.name.lower()
     if name == "cifar10":
         return _load_cifar10(cfg)
+    if name in IMAGENET_KAGGLE_NAMES:
+        return _load_imagenet_kaggle(cfg)
     if name in IMAGENET_NAMES:
         return _load_imagenet1k(cfg)
     if name in {"imagefolder", "image_folder"}:
@@ -151,6 +257,8 @@ def get_class_names(cfg: DatasetConfig | Mapping[str, Any]) -> list[str]:
         cfg = DatasetConfig.from_dict(cfg)
     if cfg.name.lower() == "cifar10":
         return list(CIFAR10_CLASSES)
+    if cfg.name.lower() in IMAGENET_KAGGLE_NAMES:
+        return _read_kaggle_synsets(Path(cfg.root))
     if cfg.name.lower() in IMAGENET_NAMES:
         train_root = Path(cfg.root) / "train"
         if not train_root.is_dir():

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -257,6 +258,99 @@ def test_imagenet_requires_matching_train_and_validation_classes(
             load_dataset(config)
     finally:
         FakeImageNetFolder.mismatch_validation = False
+
+
+def _make_kaggle_imagenet(root: Path, class_count: int = 1000) -> dict[int, str]:
+    synsets = [f"n{index:08d}" for index in range(class_count)]
+    class_index = {str(index): [synsets[index], f"class_{index}"] for index in range(class_count)}
+    (root / "imagenet_class_index.json").write_text(json.dumps(class_index))
+
+    cls_loc = root / "ILSVRC" / "Data" / "CLS-LOC"
+    train_dir = cls_loc / "train"
+    val_dir = cls_loc / "val"
+    train_dir.mkdir(parents=True)
+    val_dir.mkdir(parents=True)
+
+    picked = {3: synsets[3], 7: synsets[7]}
+    for class_id, synset in picked.items():
+        synset_dir = train_dir / synset
+        synset_dir.mkdir()
+        for sample in range(2):
+            Image.new("RGB", (16, 16), color=(class_id, sample, 0)).save(synset_dir / f"{synset}_{sample}.JPEG")
+
+    val_to_syn: dict[str, str] = {}
+    for class_id, synset in picked.items():
+        name = f"ILSVRC2012_val_{class_id:08d}.JPEG"
+        Image.new("RGB", (16, 16), color=(class_id, 0, 0)).save(val_dir / name)
+        val_to_syn[name] = synset
+    (root / "ILSVRC2012_val_labels.json").write_text(json.dumps(val_to_syn))
+    return picked
+
+
+def test_imagenet_kaggle_loads_train_validation_and_empty_test(tmp_path: Path) -> None:
+    _make_kaggle_imagenet(tmp_path)
+    config = DatasetConfig(
+        name="imagenet-kaggle",
+        root=str(tmp_path),
+        image_size=16,
+        val_split=0.0,
+        download=False,
+    )
+    train, validation, test = load_dataset(config)
+    assert (len(train), len(validation), len(test)) == (4, 2, 0)
+    assert sorted(set(train.targets)) == [3, 7]
+    assert sorted(validation.targets) == [3, 7]
+    assert len(train.classes) == 1000
+    image, target = train[0]
+    assert image.shape == (3, 16, 16)
+    assert target == 3
+    assert isinstance(train.transform.transforms[0], transforms.RandomResizedCrop)
+    assert isinstance(validation.transform.transforms[0], transforms.Resize)
+
+
+def test_imagenet_kaggle_class_names_are_ordered_by_class_id(tmp_path: Path) -> None:
+    _make_kaggle_imagenet(tmp_path)
+    config = DatasetConfig(name="imagenet-kaggle", root=str(tmp_path), val_split=0.0, download=False)
+    names = get_class_names(config)
+    assert len(names) == 1000
+    assert names[0] == "n00000000"
+    assert names[3] == "n00000003"
+
+
+def test_imagenet_kaggle_requires_zero_validation_split() -> None:
+    with pytest.raises(ValueError, match="val_split must be 0.0"):
+        DatasetConfig.from_dict({"name": "imagenet-kaggle", "val_split": 0.1, "download": False})
+
+
+def test_imagenet_kaggle_rejects_automatic_download(tmp_path: Path) -> None:
+    config = DatasetConfig(name="imagenet-kaggle", root=str(tmp_path), val_split=0.0, download=True)
+    with pytest.raises(ValueError, match="cannot be downloaded automatically"):
+        load_dataset(config)
+
+
+def test_imagenet_kaggle_requires_split_directory(tmp_path: Path) -> None:
+    class_index = {str(index): [f"n{index:08d}", f"class_{index}"] for index in range(1000)}
+    (tmp_path / "imagenet_class_index.json").write_text(json.dumps(class_index))
+    config = DatasetConfig(name="imagenet-kaggle", root=str(tmp_path), val_split=0.0, download=False)
+    with pytest.raises(FileNotFoundError, match="Directory not found"):
+        load_dataset(config)
+
+
+def test_imagenet_kaggle_loader_requires_1000_classes(tmp_path: Path) -> None:
+    _make_kaggle_imagenet(tmp_path)
+    class_index = {"3": ["n00000003", "class_3"], "7": ["n00000007", "class_7"]}
+    (tmp_path / "imagenet_class_index.json").write_text(json.dumps(class_index))
+    config = DatasetConfig(name="imagenet-kaggle", root=str(tmp_path), val_split=0.0, download=False)
+    with pytest.raises(ValueError, match="must contain 1000 classes, found 2"):
+        load_dataset(config)
+
+
+def test_imagenet_kaggle_class_index_requires_1000_classes(tmp_path: Path) -> None:
+    class_index = {str(index): [f"n{index:08d}", f"class_{index}"] for index in range(3)}
+    (tmp_path / "imagenet_class_index.json").write_text(json.dumps(class_index))
+    config = DatasetConfig(name="imagenet-kaggle", root=str(tmp_path), val_split=0.0, download=False)
+    with pytest.raises(ValueError, match="must contain 1000 classes, found 3"):
+        get_class_names(config)
 
 
 def test_dataset_name_dispatch_errors_and_cifar_names() -> None:
